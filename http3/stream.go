@@ -159,17 +159,19 @@ func (s *Stream) Write(b []byte) (int, error) {
 	l := len(b) - n
 	s.frameHeader = (&dataFrame{Length: uint64(l)}).Append(s.frameHeader[:0])
 	s.bytesUnwrittenInFrame = uint64(l)
-	if s.qlogger != nil {
+	frameLen := len(s.frameHeader) + l
+	m, err := s.continueDataFrame(b[n:])
+	// only log the frame once its header was written
+	if s.qlogger != nil && len(s.frameHeader) == 0 {
 		s.qlogger.RecordEvent(qlog.FrameCreated{
 			StreamID: s.StreamID(),
 			Raw: qlog.RawInfo{
-				Length:        len(s.frameHeader) + l,
+				Length:        frameLen,
 				PayloadLength: l,
 			},
 			Frame: qlog.Frame{Frame: qlog.DataFrame{}},
 		})
 	}
-	m, err := s.continueDataFrame(b[n:])
 	return n + m, err
 }
 

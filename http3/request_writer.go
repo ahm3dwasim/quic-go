@@ -41,18 +41,24 @@ func newRequestWriter() *requestWriter {
 
 func (w *requestWriter) WriteRequestHeader(wr io.Writer, req *http.Request, gzip bool, streamID quic.StreamID, qlogger qlogwriter.Recorder) error {
 	buf := &bytes.Buffer{}
-	if err := w.writeHeaders(buf, req, gzip, streamID, qlogger); err != nil {
+	qlogFrame, err := w.writeHeaders(buf, req, gzip, streamID, qlogger)
+	if err != nil {
 		return err
 	}
 	if _, err := wr.Write(buf.Bytes()); err != nil {
 		return err
+	}
+	if qlogFrame != nil {
+		qlogFrame()
 	}
 	trace := httptrace.ContextClientTrace(req.Context())
 	traceWroteHeaders(trace)
 	return nil
 }
 
-func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool, streamID quic.StreamID, qlogger qlogwriter.Recorder) error {
+// writeHeaders serializes the HEADERS frame to wr.
+// If qlog is enabled, it returns a function that logs the frame. It needs to be called once the frame was sent.
+func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool, streamID quic.StreamID, qlogger qlogwriter.Recorder) (func(), error) {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 	defer w.encoder.Close()
@@ -71,19 +77,24 @@ func (w *requestWriter) writeHeaders(wr io.Writer, req *http.Request, gzip bool,
 
 	headerFields, err := w.encodeHeaders(req, gzip, trailers, actualContentLength(req), qlogger != nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	b := make([]byte, 0, 128)
 	b = (&headersFrame{Length: uint64(w.headerBuf.Len())}).Append(b)
-	if qlogger != nil {
-		qlogCreatedHeadersFrame(qlogger, streamID, len(b)+w.headerBuf.Len(), w.headerBuf.Len(), headerFields)
-	}
+	payloadLen := w.headerBuf.Len()
 	if _, err := wr.Write(b); err != nil {
-		return err
+		return nil, err
 	}
-	_, err = wr.Write(w.headerBuf.Bytes())
-	return err
+	if _, err := wr.Write(w.headerBuf.Bytes()); err != nil {
+		return nil, err
+	}
+	if qlogger == nil {
+		return nil, nil
+	}
+	return func() {
+		qlogCreatedHeadersFrame(qlogger, streamID, len(b)+payloadLen, payloadLen, headerFields)
+	}, nil
 }
 
 func isExtendedConnectRequest(req *http.Request) bool {

@@ -39,6 +39,7 @@ type responseWriter struct {
 	header   http.Header
 	trailers map[string]struct{}
 	buf      []byte // the unwritten part of the HEADERS frame
+	qlogBuf  func() // logs the HEADERS frame once it was fully written, nil if qlog is disabled
 	status   int    // status code passed to WriteHeader
 
 	// for responses smaller than maxSmallResponseSize, we buffer calls to Write,
@@ -219,6 +220,10 @@ func (w *responseWriter) writeHeader(status int) error {
 		return err
 	}
 	w.buf = w.buf[len(w.buf):]
+	if w.qlogBuf != nil {
+		w.qlogBuf()
+		w.qlogBuf = nil
+	}
 	return nil
 }
 
@@ -270,7 +275,9 @@ func (w *responseWriter) encodeHeader(status int) ([]byte, error) {
 	buf = append(buf, headers.Bytes()...)
 
 	if w.str.qlogger != nil {
-		qlogCreatedHeadersFrame(w.str.qlogger, w.str.StreamID(), len(buf), headers.Len(), headerFields)
+		w.qlogBuf = func() {
+			qlogCreatedHeadersFrame(w.str.qlogger, w.str.StreamID(), len(buf), headers.Len(), headerFields)
+		}
 	}
 	return buf, nil
 }
